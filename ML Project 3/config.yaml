@@ -1,0 +1,42 @@
+paths:
+  raw_data: "data/raw/Curated_Dataset_Final.xlsx"
+  processed_data: "data/processed/cleaned_data.csv"
+  plot_folder: "visualization/figures/"
+  model_path: "models/catboost_model.cbm"
+  demo_results: "visualization/demo_predictions.csv"
+
+params:
+  target_col: "target_minutes"
+  test_size: 0.3
+  random_state: 40
+  outlier_quantile: 0.75
+
+  # The full list of features used for selection
+  candidate_features:
+    - 'msdyn_caserocname'
+    - 'msdyn_casereasonidname'
+    - 'msdyn_casesubreasonidname'
+    - 'msdyn_casesubtypeidname'
+    - 'msdyn_casetypeidname'
+    - 'msdyn_countrysubmitteridname'
+    - 'hour_of_day'
+    - 'day_of_week'
+    - 'daily_volume'
+    - 'reason_median_speed'
+    - 'msdyn_businessfunctionidname'
+    - 'msdyn_lineofbusinessidname'
+    - 'msdyn_programidname'
+
+  # Only the columns that need string cleaning and CatBoost categorical handling
+  categorical_cols:
+    - 'msdyn_caserocname'
+    - 'msdyn_casereasonidname'
+    - 'msdyn_casesubreasonidname'
+    - 'msdyn_casesubtypeidname'
+    - 'msdyn_casetypeidname'
+    - 'msdyn_countrysubmitteridname'
+    - 'hour_of_day'
+    - 'day_of_week'
+    - 'msdyn_businessfunctionidname'
+    - 'msdyn_lineofbusinessidname'
+    - 'msdyn_programidname'
