@@ -26,7 +26,7 @@ OUTPUT_CONTAINER_NAME = os.getenv("OUTPUT_CONTAINER_NAME", BLOB_CONTAINER_NAME)
 OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "predictions")
 
 # Default master file name (can be overridden in request)
-DEFAULT_MASTER_FILE = os.getenv("DEFAULT_MASTER_FILE", "master_predictions.csv")
+DEFAULT_MASTER_FILE = os.getenv("DEFAULT_MASTER_FILE", "Catboost_predictions.csv")
 
 # Hard-coded local fallback
 LOCAL_MODEL_PATH = Path(r"C:\temp\Model\catboost_model.cbm")
@@ -316,6 +316,83 @@ def save_predictions_to_blob(results_df: pd.DataFrame, filename: str = None,
         raise
 
 
+# def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
+#                          predicted_dates: pd.Series) -> pd.DataFrame:
+#     """
+#     Prepare final output dataframe with all required columns
+#
+#     Required columns:
+#     - Ticket ID
+#     - Received Date
+#     - Predicted Resolution Date
+#     - Actual Resolution Date
+#     - Actual Duration (Mins)
+#     - Predicted Duration (Mins)
+#     - Delta (Mins)
+#     - SLA_Status
+#     """
+#     results = pd.DataFrame()
+#
+#     # Ticket ID
+#     if "TicketNumber" in df.columns:
+#         results["Ticket ID"] = df["TicketNumber"]
+#     else:
+#         results["Ticket ID"] = range(1, len(df) + 1)
+#
+#     # Received Date
+#     if "msdyn_receiveddate" in df.columns:
+#         results["Received Date"] = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce").dt.strftime(
+#             "%Y-%m-%d %H:%M:%S")
+#     else:
+#         results["Received Date"] = None
+#
+#     # Predicted Resolution Date
+#     results["Predicted Resolution Date"] = predicted_dates
+#
+#     # Actual Resolution Date
+#     actual_res_date_col = None
+#     for col_name in ["msdyn_resolveddate", "resolved_date", "actual_resolved_date", "modifiedon"]:
+#         if col_name in df.columns:
+#             actual_res_date_col = col_name
+#             break
+#
+#     if actual_res_date_col:
+#         results["Actual Resolution Date"] = pd.to_datetime(df[actual_res_date_col], errors="coerce").dt.strftime(
+#             "%Y-%m-%d %H:%M:%S")
+#     else:
+#         results["Actual Resolution Date"] = None
+#
+#     # Predicted Duration (Mins)
+#     results["Predicted Duration (Mins)"] = predictions_minutes
+#
+#     # Actual Duration (Mins)
+#     if actual_res_date_col and "msdyn_receiveddate" in df.columns:
+#         received_dt = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce")
+#         resolved_dt = pd.to_datetime(df[actual_res_date_col], errors="coerce")
+#         actual_duration = (resolved_dt - received_dt).dt.total_seconds() / 60
+#         results["Actual Duration (Mins)"] = actual_duration.round(0)
+#     elif "actual_duration" in df.columns:
+#         results["Actual Duration (Mins)"] = pd.to_numeric(df["actual_duration"], errors="coerce").round(0)
+#     else:
+#         results["Actual Duration (Mins)"] = None
+#
+#     # Delta (Mins)
+#     if results["Actual Duration (Mins)"].notna().any():
+#         results["Delta (Mins)"] = (results["Actual Duration (Mins)"] - results["Predicted Duration (Mins)"]).round(0)
+#     else:
+#         results["Delta (Mins)"] = None
+#
+#     # SLA_Status
+#     results["SLA_Status"] = results.apply(
+#         lambda row: calculate_sla_status(
+#             row["Actual Duration (Mins)"],
+#             row["Predicted Duration (Mins)"]
+#         ),
+#         axis=1
+#     )
+#
+#     return results
+
 def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
                          predicted_dates: pd.Series) -> pd.DataFrame:
     """
@@ -330,6 +407,7 @@ def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
     - Predicted Duration (Mins)
     - Delta (Mins)
     - SLA_Status
+    - Additional business columns
     """
     results = pd.DataFrame()
 
@@ -391,8 +469,30 @@ def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
         axis=1
     )
 
-    return results
+    # ========================================================================
+    # ADDITIONAL BUSINESS COLUMNS
+    # ========================================================================
+    additional_columns = [
+        "msdyn_caserocname",
+        "msdyn_businessfunctionidname",
+        "msdyn_lineofbusinessidname",
+        "msdyn_programidname",
+        "msdyn_casetypeidname",
+        "msdyn_casesubtypeidname",
+        "msdyn_casereasonidname",
+        "msdyn_casesubreasonidname",
+        "prioritycodename",
+        "msdyn_countrysubmitteridname",
+        "msdyn_countryprocessedidname"
+    ]
 
+    for col in additional_columns:
+        if col in df.columns:
+            results[col] = df[col].values
+        else:
+            results[col] = None
+
+    return results
 
 # -----------------------------------------------------------------------------
 # Azure Function
