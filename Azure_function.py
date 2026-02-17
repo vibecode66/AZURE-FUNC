@@ -26,7 +26,7 @@ OUTPUT_CONTAINER_NAME = os.getenv("OUTPUT_CONTAINER_NAME", BLOB_CONTAINER_NAME)
 OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "predictions")
 
 # Default master file name (can be overridden in request)
-DEFAULT_MASTER_FILE = os.getenv("DEFAULT_MASTER_FILE", "Catboost_predictions.csv")
+DEFAULT_MASTER_FILE = os.getenv("DEFAULT_MASTER_FILE", "sla_output_results.csv")
 
 # Hard-coded local fallback
 LOCAL_MODEL_PATH = Path(r"C:\temp\Model\catboost_model.cbm")
@@ -222,184 +222,89 @@ def read_existing_predictions(blob_path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def save_predictions_to_blob(results_df: pd.DataFrame, filename: str = None,
-                             append_mode: bool = False,
-                             remove_duplicates: bool = True) -> Dict[str, Any]:
+def save_results_to_blob(df_to_save: pd.DataFrame, blob_path: str, deduplicate_column: str = 'TicketNumber') -> Dict[
+    str, Any]:
     """
-    Save predictions dataframe to blob storage
+    Save or append results to Azure Blob Storage CSV file
 
     Parameters:
     -----------
-    results_df : pd.DataFrame
-        DataFrame containing prediction results
-    filename : str, optional
-        Custom filename. If None, generates timestamp-based name or uses default master file
-    append_mode : bool
-        If True, appends to existing file. If False, creates new file
-    remove_duplicates : bool
-        If True and append_mode is True, removes duplicate Ticket IDs (keeps latest)
+    df_to_save : pd.DataFrame
+        New records to save
+    blob_path : str
+        Full blob path (e.g., "predictions/sla_output_results.csv")
+    deduplicate_column : str
+        Column to use for deduplication (default: 'TicketNumber')
 
     Returns:
     --------
     dict : Information about the save operation
     """
     try:
-        # Determine filename
-        if filename is None:
-            if append_mode:
-                filename = DEFAULT_MASTER_FILE
-            else:
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                filename = f"predictions_{timestamp}.csv"
-
-        # Ensure filename has .csv extension
-        if not filename.endswith('.csv'):
-            filename = f"{filename}.csv"
-
-        # Create blob path
-        blob_path = f"{OUTPUT_FOLDER}/{filename}"
-
-        # If append mode, read existing file and concatenate
-        if append_mode:
-            existing_df = read_existing_predictions(blob_path)
-
-            if not existing_df.empty:
-                # Concatenate new results with existing
-                combined_df = pd.concat([existing_df, results_df], ignore_index=True)
-
-                # Remove duplicates if requested (keep last occurrence)
-                if remove_duplicates and "Ticket ID" in combined_df.columns:
-                    original_count = len(combined_df)
-                    combined_df = combined_df.drop_duplicates(subset=["Ticket ID"], keep="last")
-                    duplicates_removed = original_count - len(combined_df)
-                    logging.info(f"Removed {duplicates_removed} duplicate Ticket IDs")
-
-                final_df = combined_df
-                operation = "appended"
-                new_records = len(results_df)
-                total_records = len(final_df)
-            else:
-                final_df = results_df
-                operation = "created"
-                new_records = len(results_df)
-                total_records = len(final_df)
-        else:
-            final_df = results_df
-            operation = "created"
-            new_records = len(results_df)
-            total_records = len(final_df)
-
-        # Add timestamp column for tracking
-        final_df["Prediction Timestamp"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Convert dataframe to CSV
-        csv_buffer = final_df.to_csv(index=False)
-
-        # Upload to blob
         blob_client = _get_blob_client(OUTPUT_CONTAINER_NAME, blob_path)
-        blob_client.upload_blob(csv_buffer, overwrite=True)
 
-        blob_url = blob_client.url
-        logging.info(f"Predictions {operation} to blob: {blob_url}")
+        # Check if file exists
+        existing_df = pd.DataFrame()
+        operation = "created"
+
+        try:
+            if hasattr(blob_client, "exists") and blob_client.exists():
+                # Download existing data
+                existing_data = blob_client.download_blob().readall()
+                existing_df = pd.read_csv(BytesIO(existing_data))
+                operation = "appended"
+                logging.info(f"Found existing file with {len(existing_df)} records")
+        except Exception as e:
+            logging.info(f"No existing file found or error reading: {e}. Creating new file.")
+
+        # Combine datasets
+        if not existing_df.empty:
+            # Append new records to existing
+            final_df = pd.concat([existing_df, df_to_save], ignore_index=True)
+
+            # Deduplicate by specified column (keep latest)
+            if deduplicate_column in final_df.columns:
+                original_count = len(final_df)
+                final_df = final_df.drop_duplicates(subset=[deduplicate_column], keep='last')
+                duplicates_removed = original_count - len(final_df)
+                logging.info(f"Removed {duplicates_removed} duplicate records based on {deduplicate_column}")
+        else:
+            final_df = df_to_save
+
+        # Add timestamp for tracking
+        final_df['Last Updated'] = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Convert to CSV and upload
+        csv_data = final_df.to_csv(index=False)
+        blob_client.upload_blob(csv_data, overwrite=True)
+
+        logging.info(f"Successfully saved {len(df_to_save)} new records. Total records: {len(final_df)}")
 
         return {
-            "blob_url": blob_url,
+            "success": True,
+            "blob_url": blob_client.url,
             "blob_path": blob_path,
             "operation": operation,
-            "new_records": new_records,
-            "total_records": total_records,
-            "filename": filename
+            "new_records": len(df_to_save),
+            "total_records": len(final_df),
+            "duplicates_removed": len(existing_df) + len(df_to_save) - len(final_df) if not existing_df.empty else 0
         }
 
     except Exception as e:
-        logging.error(f"Error saving predictions to blob: {e}")
-        raise
+        logging.error(f"Failed to save to Azure Blob: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
-
-# def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
-#                          predicted_dates: pd.Series) -> pd.DataFrame:
-#     """
-#     Prepare final output dataframe with all required columns
-#
-#     Required columns:
-#     - Ticket ID
-#     - Received Date
-#     - Predicted Resolution Date
-#     - Actual Resolution Date
-#     - Actual Duration (Mins)
-#     - Predicted Duration (Mins)
-#     - Delta (Mins)
-#     - SLA_Status
-#     """
-#     results = pd.DataFrame()
-#
-#     # Ticket ID
-#     if "TicketNumber" in df.columns:
-#         results["Ticket ID"] = df["TicketNumber"]
-#     else:
-#         results["Ticket ID"] = range(1, len(df) + 1)
-#
-#     # Received Date
-#     if "msdyn_receiveddate" in df.columns:
-#         results["Received Date"] = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce").dt.strftime(
-#             "%Y-%m-%d %H:%M:%S")
-#     else:
-#         results["Received Date"] = None
-#
-#     # Predicted Resolution Date
-#     results["Predicted Resolution Date"] = predicted_dates
-#
-#     # Actual Resolution Date
-#     actual_res_date_col = None
-#     for col_name in ["msdyn_resolveddate", "resolved_date", "actual_resolved_date", "modifiedon"]:
-#         if col_name in df.columns:
-#             actual_res_date_col = col_name
-#             break
-#
-#     if actual_res_date_col:
-#         results["Actual Resolution Date"] = pd.to_datetime(df[actual_res_date_col], errors="coerce").dt.strftime(
-#             "%Y-%m-%d %H:%M:%S")
-#     else:
-#         results["Actual Resolution Date"] = None
-#
-#     # Predicted Duration (Mins)
-#     results["Predicted Duration (Mins)"] = predictions_minutes
-#
-#     # Actual Duration (Mins)
-#     if actual_res_date_col and "msdyn_receiveddate" in df.columns:
-#         received_dt = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce")
-#         resolved_dt = pd.to_datetime(df[actual_res_date_col], errors="coerce")
-#         actual_duration = (resolved_dt - received_dt).dt.total_seconds() / 60
-#         results["Actual Duration (Mins)"] = actual_duration.round(0)
-#     elif "actual_duration" in df.columns:
-#         results["Actual Duration (Mins)"] = pd.to_numeric(df["actual_duration"], errors="coerce").round(0)
-#     else:
-#         results["Actual Duration (Mins)"] = None
-#
-#     # Delta (Mins)
-#     if results["Actual Duration (Mins)"].notna().any():
-#         results["Delta (Mins)"] = (results["Actual Duration (Mins)"] - results["Predicted Duration (Mins)"]).round(0)
-#     else:
-#         results["Delta (Mins)"] = None
-#
-#     # SLA_Status
-#     results["SLA_Status"] = results.apply(
-#         lambda row: calculate_sla_status(
-#             row["Actual Duration (Mins)"],
-#             row["Predicted Duration (Mins)"]
-#         ),
-#         axis=1
-#     )
-#
-#     return results
 
 def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
                          predicted_dates: pd.Series) -> pd.DataFrame:
     """
     Prepare final output dataframe with all required columns
 
-    Required columns:
-    - Ticket ID
+    Columns include:
+    - TicketNumber
     - Received Date
     - Predicted Resolution Date
     - Actual Resolution Date
@@ -411,21 +316,22 @@ def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
     """
     results = pd.DataFrame()
 
-    # Ticket ID
+    # Ticket ID/Number
     if "TicketNumber" in df.columns:
-        results["Ticket ID"] = df["TicketNumber"]
+        results["TicketNumber"] = df["TicketNumber"]
     else:
-        results["Ticket ID"] = range(1, len(df) + 1)
+        results["TicketNumber"] = range(1, len(df) + 1)
 
     # Received Date
     if "msdyn_receiveddate" in df.columns:
-        results["Received Date"] = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce").dt.strftime(
-            "%Y-%m-%d %H:%M:%S")
+        received_dt = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce")
+        results["Received Date"] = received_dt.dt.strftime("%m/%d/%Y %H:%M:%S")
     else:
         results["Received Date"] = None
 
     # Predicted Resolution Date
-    results["Predicted Resolution Date"] = predicted_dates
+    pred_dt = pd.to_datetime(predicted_dates, errors="coerce")
+    results["Predicted Resolution Date"] = pred_dt.dt.strftime("%m/%d/%Y %H:%M:%S")
 
     # Actual Resolution Date
     actual_res_date_col = None
@@ -434,23 +340,29 @@ def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
             actual_res_date_col = col_name
             break
 
+    has_actual_date = False
     if actual_res_date_col:
-        results["Actual Resolution Date"] = pd.to_datetime(df[actual_res_date_col], errors="coerce").dt.strftime(
-            "%Y-%m-%d %H:%M:%S")
+        actual_dt = pd.to_datetime(df[actual_res_date_col], errors="coerce")
+        if actual_dt.notna().any():
+            has_actual_date = True
+            results["Actual Resolution Date"] = actual_dt.dt.strftime("%m/%d/%Y %H:%M:%S")
+        else:
+            results["Actual Resolution Date"] = None
     else:
         results["Actual Resolution Date"] = None
 
     # Predicted Duration (Mins)
-    results["Predicted Duration (Mins)"] = predictions_minutes
+    results["Predicted Duration (Mins)"] = predictions_minutes.round(0).astype(int)
 
     # Actual Duration (Mins)
     if actual_res_date_col and "msdyn_receiveddate" in df.columns:
         received_dt = pd.to_datetime(df["msdyn_receiveddate"], errors="coerce")
         resolved_dt = pd.to_datetime(df[actual_res_date_col], errors="coerce")
         actual_duration = (resolved_dt - received_dt).dt.total_seconds() / 60
-        results["Actual Duration (Mins)"] = actual_duration.round(0)
+        results["Actual Duration (Mins)"] = actual_duration.round(0).astype('Int64')
     elif "actual_duration" in df.columns:
-        results["Actual Duration (Mins)"] = pd.to_numeric(df["actual_duration"], errors="coerce").round(0)
+        results["Actual Duration (Mins)"] = pd.to_numeric(df["actual_duration"], errors="coerce").round(0).astype(
+            'Int64')
     else:
         results["Actual Duration (Mins)"] = None
 
@@ -460,17 +372,19 @@ def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
     else:
         results["Delta (Mins)"] = None
 
-    # SLA_Status
-    results["SLA_Status"] = results.apply(
-        lambda row: calculate_sla_status(
-            row["Actual Duration (Mins)"],
-            row["Predicted Duration (Mins)"]
-        ),
-        axis=1
-    )
+    # SLA Status - Enhanced logic similar to app.py
+    if has_actual_date and "Actual Resolution Date" in results.columns:
+        # Calculate SLA status based on delta between predicted and actual
+        delta_seconds = (actual_dt - pred_dt).dt.total_seconds()
+        delta_minutes = delta_seconds / 60
+        results["SLA Status"] = delta_minutes.apply(
+            lambda x: 'Delay' if x > 0 else ('Early' if x < 0 else 'On Time')
+        )
+    else:
+        results["SLA Status"] = 'Pending'
 
     # ========================================================================
-    # ADDITIONAL BUSINESS COLUMNS
+    # ADDITIONAL BUSINESS COLUMNS (from app.py requirements)
     # ========================================================================
     additional_columns = [
         "msdyn_caserocname",
@@ -494,34 +408,51 @@ def prepare_final_output(df: pd.DataFrame, predictions_minutes: np.ndarray,
 
     return results
 
+
 # -----------------------------------------------------------------------------
 # Azure Function
 # -----------------------------------------------------------------------------
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 
-@app.function_name(name="Predict")
-@app.route(route="Predict", methods=["POST"])
-def Predict(req: func.HttpRequest) -> func.HttpResponse:
+@app.function_name(name="predict")
+@app.route(route="predict", methods=["POST"])
+def predict(req: func.HttpRequest) -> func.HttpResponse:
     """
     Main prediction endpoint that accepts JSON input, makes predictions,
-    and saves results to blob storage
+    and automatically saves results to blob storage
 
-    Expected JSON format:
+    Expected JSON format (single record or array):
     {
-        "data": [...],              # List of records or single record (REQUIRED)
-        "save_to_blob": true,       # Optional, default true
-        "append_mode": true,        # Optional, default true (append to master file)
-        "filename": "custom.csv",   # Optional custom filename
-        "remove_duplicates": true   # Optional, remove duplicate Ticket IDs when appending
+        "TicketNumber": "12345",
+        "msdyn_receiveddate": "2026-01-15T10:30:00",
+        "prioritycodename": "High",
+        ... other features ...
+    }
+
+    OR
+
+    [
+        { "TicketNumber": "12345", ... },
+        { "TicketNumber": "12346", ... }
+    ]
+
+    Optional parameters can be included:
+    {
+        "data": [...],                    # Records to process
+        "save_to_blob": true,             # Default: true
+        "filename": "custom.csv",         # Default: sla_output_results.csv
+        "deduplicate_column": "TicketNumber"  # Default: TicketNumber
     }
     """
     try:
+        # Load model
         load_model_if_needed()
 
+        # Parse request
         try:
             payload = req.get_json()
-            logging.info(f"Payload received for inference")
+            logging.info(f"Received prediction request")
         except ValueError:
             return func.HttpResponse(
                 json.dumps({"success": False, "error": "Invalid JSON"}),
@@ -531,15 +462,17 @@ def Predict(req: func.HttpRequest) -> func.HttpResponse:
 
         # Extract parameters
         save_to_blob = payload.get("save_to_blob", True)
-        append_mode = payload.get("append_mode", True)  # Default to append mode
-        custom_filename = payload.get("filename", None)
-        remove_duplicates = payload.get("remove_duplicates", True)
+        custom_filename = payload.get("filename", DEFAULT_MASTER_FILE)
+        deduplicate_column = payload.get("deduplicate_column", "TicketNumber")
 
-        # Get data
+        # Get data - support both formats
         if "data" in payload:
             records = payload["data"]
         else:
-            records = payload
+            # Assume the entire payload is the data
+            # Filter out control parameters
+            control_params = {"save_to_blob", "filename", "deduplicate_column"}
+            records = {k: v for k, v in payload.items() if k not in control_params}
 
         # Support both single object and list of objects
         if not isinstance(records, list):
@@ -578,7 +511,7 @@ def Predict(req: func.HttpRequest) -> func.HttpResponse:
         else:
             pred_resolved_str = pd.Series([None] * len(df))
 
-        # Prepare final output
+        # Prepare final output (matching app.py format)
         final_results = prepare_final_output(df, preds_minutes, pred_resolved_str)
 
         # Prepare response
@@ -588,26 +521,35 @@ def Predict(req: func.HttpRequest) -> func.HttpResponse:
             "results": final_results.to_dict(orient="records")
         }
 
-        # Save to blob if requested
+        # Save to blob storage (automatic update/append)
         if save_to_blob:
             try:
-                save_info = save_predictions_to_blob(
-                    final_results,
-                    custom_filename,
-                    append_mode=append_mode,
-                    remove_duplicates=remove_duplicates
-                )
-                response_data.update({
-                    "blob_saved": True,
-                    "blob_url": save_info["blob_url"],
-                    "blob_path": save_info["blob_path"],
-                    "operation": save_info["operation"],
-                    "new_records": save_info["new_records"],
-                    "total_records": save_info["total_records"],
-                    "filename": save_info["filename"]
-                })
-                logging.info(
-                    f"Results saved: {save_info['operation']} - {save_info['new_records']} new, {save_info['total_records']} total")
+                # Ensure filename has .csv extension
+                if not custom_filename.endswith('.csv'):
+                    custom_filename = f"{custom_filename}.csv"
+
+                # Create full blob path
+                blob_path = f"{OUTPUT_FOLDER}/{custom_filename}"
+
+                # Save/update results
+                save_info = save_results_to_blob(final_results, blob_path, deduplicate_column)
+
+                if save_info["success"]:
+                    response_data.update({
+                        "blob_saved": True,
+                        "blob_url": save_info["blob_url"],
+                        "blob_path": save_info["blob_path"],
+                        "operation": save_info["operation"],
+                        "new_records": save_info["new_records"],
+                        "total_records": save_info["total_records"],
+                        "duplicates_removed": save_info.get("duplicates_removed", 0)
+                    })
+                    logging.info(
+                        f"Results saved: {save_info['operation']} - {save_info['new_records']} new, {save_info['total_records']} total")
+                else:
+                    response_data["blob_saved"] = False
+                    response_data["blob_error"] = save_info.get("error", "Unknown error")
+
             except Exception as e:
                 logging.error(f"Failed to save to blob: {e}")
                 response_data["blob_saved"] = False
@@ -620,7 +562,7 @@ def Predict(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except Exception as e:
-        logging.exception("Unhandled error in Predict.")
+        logging.exception("Unhandled error in predict endpoint.")
         return func.HttpResponse(
             json.dumps({"success": False, "error": str(e)}),
             status_code=500,
@@ -628,9 +570,9 @@ def Predict(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
-@app.function_name(name="HealthCheck")
+@app.function_name(name="health")
 @app.route(route="health", methods=["GET"])
-def HealthCheck(req: func.HttpRequest) -> func.HttpResponse:
+def health(req: func.HttpRequest) -> func.HttpResponse:
     """Simple health check endpoint"""
     try:
         load_model_if_needed()
@@ -638,7 +580,10 @@ def HealthCheck(req: func.HttpRequest) -> func.HttpResponse:
             json.dumps({
                 "status": "healthy",
                 "model_loaded": MODEL is not None,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "output_container": OUTPUT_CONTAINER_NAME,
+                "output_folder": OUTPUT_FOLDER,
+                "default_file": DEFAULT_MASTER_FILE
             }),
             status_code=200,
             mimetype="application/json"
@@ -653,3 +598,4 @@ def HealthCheck(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500,
             mimetype="application/json"
         )
+
