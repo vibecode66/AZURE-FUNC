@@ -5,6 +5,9 @@ import requests
 import urllib3
 import base64
 import os
+import io
+# Correct import for Blob Storage
+from azure.storage.blob import BlobServiceClient
 
 # Suppress the "InsecureRequestWarning"
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -19,6 +22,33 @@ def get_base64_image(image_path):
         return None
     except Exception:
         return None
+
+
+# --- Function to Save/Update CSV on Azure Blob ---
+def save_results_to_blob(df_to_save, conn_str, container, blob_name):
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+        blob_client = blob_service_client.get_blob_client(container=container, blob=blob_name)
+
+        # Check if file exists to append; otherwise create new
+        if blob_client.exists():
+            existing_data = blob_client.download_blob().readall()
+            existing_df = pd.read_csv(io.BytesIO(existing_data))
+            # Append new record
+            final_df = pd.concat([existing_df, df_to_save], ignore_index=True)
+            # Optional: Deduplicate by TicketNumber if it exists
+            if 'TicketNumber' in final_df.columns:
+                final_df = final_df.drop_duplicates(subset=['TicketNumber'], keep='last')
+        else:
+            final_df = df_to_save
+
+        # Convert DF to CSV string
+        csv_data = final_df.to_csv(index=False)
+        blob_client.upload_blob(csv_data, overwrite=True)
+        return True
+    except Exception as e:
+        st.error(f"Failed to save to Azure: {e}")
+        return False
 
 
 # --- Page Config ---
@@ -51,6 +81,12 @@ with st.sidebar:
     st.markdown("### Connection")
     api_url = st.text_input("Inference Endpoint",
                             value="https://func-sla-catboost-train-uat-eastus.azurewebsites.net/predict")
+
+    st.markdown("---")
+    st.markdown("### Azure Storage Settings")
+    az_conn_str = st.text_input("Connection String", type="password", help="Azure Blob Storage Connection String")
+    az_container = st.text_input("Container Name", value="predictions")
+    az_blob_name = st.text_input("CSV Filename", value="sla_output_results.csv")
 
     st.markdown("---")
     st.markdown("### Request options")
@@ -93,7 +129,6 @@ if st.session_state.data is not None:
         row_data = st.session_state.data.iloc[row_num - 1].to_dict()
         row_data_cleaned = json.loads(pd.Series(row_data).to_json(date_format='iso'))
         st.session_state.built_payload = json.dumps(row_data_cleaned, indent=2)
-        # Store the original input data for later use
         st.session_state.original_input_data = pd.DataFrame([row_data])
         st.code(st.session_state.built_payload, language="json")
 
@@ -116,32 +151,25 @@ if st.session_state.data is not None:
                     results_list = st.session_state.inference_result.get("results", [])
                     if results_list:
                         results_df = pd.DataFrame(results_list)
-
-                        # Extract key prediction columns
                         prediction_data = pd.DataFrame()
 
-                        # Ticket ID
                         if 'Ticket ID' in results_df.columns:
                             prediction_data['TicketNumber'] = results_df['Ticket ID']
 
-                        # Predicted Duration
                         if 'Predicted Duration (Mins)' in results_df.columns:
                             prediction_data['Predicted Duration (Mins)'] = pd.to_numeric(
                                 results_df['Predicted Duration (Mins)'], errors='coerce').round(0).astype('int')
 
-                        # Received Date
                         if 'Received Date' in results_df.columns:
                             received_dt = pd.to_datetime(results_df['Received Date'], errors='coerce')
-                            prediction_data['Received Date'] = received_dt.dt.strftime('%m/%d/%Y %H:%M:%S')
-                            prediction_data['_received_dt'] = received_dt  # Keep for calculation
+                            prediction_data['msdyn_receiveddate'] = received_dt.dt.strftime('%m/%d/%Y %H:%M:%S')
+                            prediction_data['msdyn_receiveddate'] = received_dt
 
-                        # Predicted Resolution Date
                         if 'Predicted Resolution Date' in results_df.columns:
                             pred_dt = pd.to_datetime(results_df['Predicted Resolution Date'], errors='coerce')
                             prediction_data['Predicted Resolution Date'] = pred_dt.dt.strftime('%m/%d/%Y %H:%M:%S')
-                            prediction_data['_pred_dt'] = pred_dt  # Keep for calculation
+                            prediction_data['_pred_dt'] = pred_dt
 
-                        # Check if Actual Resolution Date exists in the response
                         has_actual_date = False
                         if 'Actual Resolution Date' in results_df.columns:
                             actual_dt = pd.to_datetime(results_df['Actual Resolution Date'], errors='coerce')
@@ -150,26 +178,18 @@ if st.session_state.data is not None:
                                 prediction_data['Actual Resolution Date'] = actual_dt.dt.strftime('%m/%d/%Y %H:%M:%S')
                                 prediction_data['_actual_dt'] = actual_dt
 
-                        # Calculate SLA Status based on what data is available
                         if has_actual_date:
-                            # Compare Actual vs Predicted Resolution Date
                             delta_seconds = (
                                         prediction_data['_actual_dt'] - prediction_data['_pred_dt']).dt.total_seconds()
                             delta_minutes = delta_seconds / 60
-
-                            # If actual is later than predicted = Delay, if earlier = Early
                             prediction_data['SLA Status'] = delta_minutes.apply(
                                 lambda x: 'Delay' if x > 0 else ('Early' if x < 0 else 'On Time')
                             )
                         else:
-                            # No actual data available yet
                             prediction_data['SLA Status'] = 'Pending'
 
-                        # Add all original input columns from the JSON payload
                         if st.session_state.original_input_data is not None:
                             original_df = st.session_state.original_input_data.copy()
-
-                            # Format datetime columns in original data
                             for col in original_df.columns:
                                 if original_df[col].dtype == 'object':
                                     try:
@@ -179,83 +199,54 @@ if st.session_state.data is not None:
                                     except:
                                         pass
 
-                            # Remove columns from original_df that already exist in prediction_data
-                            # This prevents duplicate columns
                             columns_to_exclude = [col for col in original_df.columns if col in prediction_data.columns]
                             original_df_filtered = original_df.drop(columns=columns_to_exclude, errors='ignore')
-
-                            # Combine prediction data with filtered original input data
                             st.session_state.final_display_df = pd.concat([prediction_data, original_df_filtered],
                                                                           axis=1)
                         else:
                             st.session_state.final_display_df = prediction_data
 
+                        # --- LOGIC TO SAVE TO AZURE BLOB ---
+                        if az_conn_str and az_container:
+                            # Clean the dataframe (remove helper columns starting with _)
+                            clean_df = st.session_state.final_display_df.copy()
+                            clean_df = clean_df[[c for c in clean_df.columns if not c.startswith('_')]]
+
+                            if save_results_to_blob(clean_df, az_conn_str, az_container, az_blob_name):
+                                st.success(f"File has been saved to Azure Blob: {az_blob_name}")
+                        else:
+                            st.warning("Prediction complete, but Azure settings are missing. Results not saved.")
+
                     else:
                         st.warning("No results found in the response.")
                 else:
                     st.error(f"Error: Server returned {response.status_code}")
-                    st.error(f"Response: {response.text}")
         except Exception as e:
             st.error(f"An unexpected error occurred: {e}")
-            import traceback
-
-            st.error(traceback.format_exc())
 
     # --- Display Results Section ---
     if st.session_state.final_display_df is not None:
         st.markdown("---")
         st.subheader("Prediction Results")
-
-        # Create display dataframe
         display_df = st.session_state.final_display_df.copy()
-
-        # Remove internal columns (those starting with _)
         cols_to_display = [col for col in display_df.columns if not col.startswith('_')]
         display_df = display_df[cols_to_display]
-
-        # Remove any duplicate columns that might have slipped through
         display_df = display_df.loc[:, ~display_df.columns.duplicated()]
 
-        # Define priority column order (these will appear first if they exist)
-        priority_columns = [
-            "TicketNumber",
-            "Predicted Duration (Mins)",
-            "Received Date",
-            "Predicted Resolution Date",
-            "Actual Resolution Date",
-            "SLA Status"
-        ]
-
-        # Build final column order: priority columns first, then remaining columns
+        priority_columns = ["TicketNumber", "Predicted Duration (Mins)", "Received Date", "Predicted Resolution Date",
+                            "Actual Resolution Date", "SLA Status"]
         remaining_columns = [col for col in cols_to_display if
                              col not in priority_columns and col in display_df.columns]
         final_column_order = [col for col in priority_columns if col in display_df.columns] + remaining_columns
-
         display_df = display_df[final_column_order]
 
-        # Convert numeric columns to string for left alignment
-        numeric_cols = ["Predicted Duration (Mins)"]
-        for col in numeric_cols:
+        for col in ["Predicted Duration (Mins)"]:
             if col in display_df.columns:
                 display_df[col] = display_df[col].astype(str).replace('nan', '').replace('<NA>', '')
 
-        # Create column configuration for better display
-        column_config = {}
-        for col in display_df.columns:
-            # Use text column for everything to ensure left alignment
-            column_config[col] = st.column_config.TextColumn(col)
-
-        # Display the dataframe
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config
-        )
-
-        # Show column count
+        st.dataframe(display_df, use_container_width=True, hide_index=True,
+                     column_config={col: st.column_config.TextColumn(col) for col in display_df.columns})
         st.info(f"Displaying {len(display_df.columns)} columns and {len(display_df)} row(s)")
-
 else:
     st.info("Please upload a file to begin.")
 
