@@ -1,0 +1,6 @@
+# --- Configuration ---
+FUNCTION_BASE_URL = "https://func-sla-catboost-train-uat-eastus.azurewebsites.net"
+TRAIN_ENDPOINT = f"{FUNCTION_BASE_URL}/api/catboost_train"
+
+# Local file (supports .csv or .xlsx)
+LOCAL_FILE_PATH = r"C:\cosmic_case_sla_prediction\model_training_local\data\raw\training_raw_dataset_catboost.xlsx"
