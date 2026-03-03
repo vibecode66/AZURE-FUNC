@@ -2,36 +2,47 @@ import requests
 import os
 
 # --- Configuration ---
-# Pointing to the 'upload-csv' route instead of the training route
+# Updated base URL and endpoint
 FUNCTION_BASE_URL = "https://func-sla-catboost-train-uat-eastus.azurewebsites.net"
 UPLOAD_ENDPOINT = f"{FUNCTION_BASE_URL}/api/upload-csv"
 
-# Local file configuration
-LOCAL_FILE_PATH = r"C:\path\to\your\historical_data.xlsx"
+# Updated Local file path
+LOCAL_FILE_PATH = r"C:\cosmic_case_sla_prediction\model_training_local\data\raw\training_raw_dataset_catboost.xlsx"
 
-# This defines the folder and filename inside your blob container
-TARGET_BLOB_NAME = "training_data.xlsx"
+# The path inside the container
+# Matches the filename from your local path and places it in the 'data' folder
+TARGET_BLOB_NAME = "training_raw_dataset_catboost.xlsx"
 TARGET_PREFIX = "data" 
 
 def save_file_to_blob(local_path, blob_name, prefix):
+    """
+    Uploads a local Excel or CSV file to Azure Blob Storage via the Azure Function.
+    This uses the 'upload-csv' endpoint which simply saves the file.
+    """
     if not os.path.exists(local_path):
         print(f"❌ Error: {local_path} not found.")
         return
 
-    # These parameters match the 'upload_csv' function logic: 
-    # req.params.get("blob") and req.params.get("prefix")
+    # Parameters required by the Azure Function's 'upload_csv' logic
     params = {
         "blob": blob_name,
         "prefix": prefix,
         "overwrite": "true"
     }
 
-    print(f"🚀 Uploading {os.path.basename(local_path)} to storage (No training)...")
+    print(f"🚀 Uploading {os.path.basename(local_path)} to Azure Storage...")
 
     try:
         with open(local_path, "rb") as f:
-            # The 'upload_csv' function prefers multipart/form-data with field "file"
-            files = {"file": (os.path.basename(local_path), f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+            # Multipart/form-data upload using field "file" as preferred by the function
+            # Content-type set for Excel (.xlsx)
+            files = {
+                "file": (
+                    os.path.basename(local_path), 
+                    f, 
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            }
             
             response = requests.post(
                 UPLOAD_ENDPOINT,
