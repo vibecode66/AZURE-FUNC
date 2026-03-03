@@ -2,47 +2,48 @@ import requests
 import os
 
 # --- Configuration ---
+# Pointing to the 'upload-csv' route instead of the training route
 FUNCTION_BASE_URL = "https://func-sla-catboost-train-uat-eastus.azurewebsites.net"
-TRAIN_ENDPOINT = f"{FUNCTION_BASE_URL}/api/catboost_train"
+UPLOAD_ENDPOINT = f"{FUNCTION_BASE_URL}/api/upload-csv"
 
-# Local file configuration (Updated for Excel)
+# Local file configuration
 LOCAL_FILE_PATH = r"C:\path\to\your\historical_data.xlsx"
 
-# REQUIRED: Must match the 'raw_data' path in your config.yaml
-# Ensure it ends in .xlsx so the Azure Function knows to use pd.read_excel
-TARGET_BLOB_NAME = "data/training_data.xlsx"
+# This defines the folder and filename inside your blob container
+TARGET_BLOB_NAME = "training_data.xlsx"
+TARGET_PREFIX = "data" 
 
-def upload_and_train(local_path, blob_path):
+def save_file_to_blob(local_path, blob_name, prefix):
     if not os.path.exists(local_path):
         print(f"❌ Error: {local_path} not found.")
         return
 
-    # 'blob' parameter is required by your Function's req.params.get('blob') logic
-    params = {"blob": blob_path}
-
-    # Updated headers for Excel files
-    headers = {
-        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "User-Agent": "Python-Requests"
+    # These parameters match the 'upload_csv' function logic: 
+    # req.params.get("blob") and req.params.get("prefix")
+    params = {
+        "blob": blob_name,
+        "prefix": prefix,
+        "overwrite": "true"
     }
 
-    print(f"🚀 Uploading Excel data to '{blob_path}' and starting training...")
+    print(f"🚀 Uploading {os.path.basename(local_path)} to storage (No training)...")
 
     try:
         with open(local_path, "rb") as f:
-            # Sending raw binary data as the request body for req.get_body()
+            # The 'upload_csv' function prefers multipart/form-data with field "file"
+            files = {"file": (os.path.basename(local_path), f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+            
             response = requests.post(
-                TRAIN_ENDPOINT,
+                UPLOAD_ENDPOINT,
                 params=params,
-                data=f,
-                headers=headers,
+                files=files,
                 verify=True,
-                timeout=900  # High timeout for training
+                timeout=60
             )
 
             if response.status_code == 200:
-                print("✅ Success!")
-                print("Response:", response.json())
+                print("✅ File saved successfully!")
+                print("Server Response:", response.json())
             else:
                 print(f"❌ Failed ({response.status_code}):", response.text)
 
@@ -50,4 +51,4 @@ def upload_and_train(local_path, blob_path):
         print(f"❌ Connection Error: {e}")
 
 if __name__ == "__main__":
-    upload_and_train(LOCAL_FILE_PATH, TARGET_BLOB_NAME)
+    save_file_to_blob(LOCAL_FILE_PATH, TARGET_BLOB_NAME, TARGET_PREFIX)
