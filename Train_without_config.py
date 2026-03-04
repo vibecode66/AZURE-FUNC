@@ -482,39 +482,6 @@ def catboost_infer(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
         )
 
-
-# =============================================================================
-# HTTP Function: Health
-# =============================================================================
-@app.function_name(name="health")
-@app.route(route="health", methods=["GET"])
-def health(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        load_model_if_needed()
-        return func.HttpResponse(
-            json.dumps(
-                {
-                    "status": "healthy",
-                    "model_loaded": MODEL is not None,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "output_container": OUTPUT_CONTAINER_NAME,
-                    "output_folder": OUTPUT_FOLDER,
-                    "default_file": DEFAULT_MASTER_FILE,
-                    "model_blob": BLOB_MODEL_NAME,
-                },
-                indent=2,
-            ),
-            status_code=200,
-            mimetype="application/json",
-        )
-    except Exception as e:
-        return func.HttpResponse(
-            json.dumps({"status": "unhealthy", "error": str(e), "timestamp": datetime.utcnow().isoformat()}, indent=2),
-            status_code=500,
-            mimetype="application/json",
-        )
-
-
 # =============================================================================
 # HTTP Function: Training trigger
 # =============================================================================
