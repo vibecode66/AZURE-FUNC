@@ -1,0 +1,43 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "SQL_SERVER": "<your-server>.database.windows.net",
+    "SQL_DATABASE": "<your-database>",
+    "SQL_USERNAME": "<your-sql-username>",
+    "SQL_PASSWORD": "<your-sql-password>",
+    "SQL_DRIVER": "{ODBC Driver 18 for SQL Server}",
+    "SQL_PORT": "1433",
+    "SQL_CONNECTION_TIMEOUT": "30",
+    "SQL_QUERY_TIMEOUT": "60",
+
+    "OPENAI_ENDPOINT": "https://<your-openai-resource>.openai.azure.com/",
+    "OPENAI_API_KEY": "<your-openai-api-key>",
+    "OPENAI_API_VERSION": "2024-02-01",
+    "OPENAI_DEPLOYMENT_NAME": "gpt-4o",
+    "OPENAI_MODEL_NAME": "gpt-4o",
+    "OPENAI_TEMPERATURE": "0.0",
+    "OPENAI_MAX_TOKENS": "2000",
+    "OPENAI_TOP_P": "1.0",
+
+    "MAX_SQL_RESULT_ROWS": "500",
+    "MAX_SQL_RETRIES": "3",
+
+    "SCHEMA_NAME": "dbo",
+    "SCHEMA_TABLES": "",
+    "EXCLUDED_COLUMNS": "",
+    "SCHEMA_CACHE_TTL_SECONDS": "3600",
+
+    "CHART_WIDTH": "12",
+    "CHART_HEIGHT": "6",
+    "CHART_DPI": "100",
+    "CHART_TITLE_FONT_SIZE": "14",
+    "CHART_LABEL_FONT_SIZE": "11",
+    "CHART_TICK_FONT_SIZE": "9",
+    "PIE_CHART_MAX_CATEGORIES": "7",
+
+    "LOG_LEVEL": "INFO"
+  }
+}
