@@ -1,0 +1,1 @@
+# Cosmic Insights app package
