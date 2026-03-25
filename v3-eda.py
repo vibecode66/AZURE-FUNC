@@ -50,9 +50,9 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 
 # 6. MANUAL GRID SEARCH (Bypassing SKLearn's incompatible engine)
 param_grid = {
-    'iterations': [1000, 1500],
+    'iterations': [2000, 3500,5000],
     'learning_rate': [0.03, 0.05],
-    'depth': [6, 8],
+    'depth': [6, 8,10],
     'l2_leaf_reg': [3, 5]
 }
 
